@@ -1,0 +1,82 @@
+// Fixed-width unsigned 2048-bit Montgomery arithmetic. Sixteen-bit limbs
+// keep every product within u64 on all native targets. Exponent bits select
+// results with masks; both multiplications execute for every bit.
+Integer :: struct { limbs: [128]u32; }
+Modulus :: struct { value: Integer; squared: Integer; inverse: u32; valid: bool; }
+FromBytes :: (bytes: []u8) -> Integer {
+    value: Integer; if bytes.count > 256 { return value }
+    for i: 0..cast(s32)bytes.count-1 { at := bytes.count-1-i; value.limbs[i/2] |= cast(u32)bytes[at] << cast(u32)((i%2)*8) }; return value
+}
+ToBytes :: (value: *Integer, bytes: []u8) -> bool {
+    if bytes.count != 256 { return false }
+    for i: 0..255 { bytes[255-i] = cast(u8)(value.limbs[i/2] >> cast(u32)((i%2)*8)) }; return true
+}
+Compare :: (a: *Integer, b: *Integer) -> s32 {
+    i: s32 = 127
+    while i >= 0 { if a.limbs[i] > b.limbs[i] { return 1 }; if a.limbs[i] < b.limbs[i] { return -1 }; i -= 1 }; return 0
+}
+Subtract :: (a: *Integer, b: *Integer) -> Integer {
+    result: Integer; borrow: u64
+    for i: 0..127 { v := cast(u64)a.limbs[i]-cast(u64)b.limbs[i]-borrow; result.limbs[i] = cast(u32)v & cast(u32)65535; borrow = v >> cast(u64)63 }; return result
+}
+Reduce :: (value: *Integer, modulus: *Integer, high: u32) -> Integer {
+    difference := Subtract(value,modulus)
+    borrow: u64
+    for i: 0..127 { v := cast(u64)value.limbs[i]-cast(u64)modulus.limbs[i]-borrow; borrow = v >> cast(u64)63 }
+    take := cast(u32)1-cast(u32)borrow
+    if high != cast(u32)0 { take = 1 }
+    mask := cast(u32)0-take; result: Integer
+    for i: 0..127 { result.limbs[i] = (difference.limbs[i]&mask) | (value.limbs[i]&(~mask)) }; return result
+}
+Double :: (value: *Integer, modulus: *Integer) -> Integer {
+    next: Integer; carry: u32
+    for i: 0..127 { word := (value.limbs[i]<<cast(u32)1)|carry; next.limbs[i] = word&cast(u32)65535; carry = word>>cast(u32)16 }
+    return Reduce(*next,modulus,carry)
+}
+Prepare :: (bytes: []u8) -> Modulus {
+    result: Modulus; if bytes.count != 256 || (bytes[255]&cast(u8)1)==cast(u8)0 || bytes[0]<cast(u8)128 { return result }
+    result.value = FromBytes(bytes); inverse: u32 = 1
+    for i: 0..4 { inverse *= cast(u32)2-result.value.limbs[0]*inverse }
+    result.inverse = (cast(u32)0-inverse)&cast(u32)65535
+    result.squared.limbs[0] = 1
+    for i: 0..4095 { result.squared = Double(*result.squared,*result.value) }
+    result.valid = true; return result
+}
+Multiply :: (a: *Integer, b: *Integer, modulus: *Modulus) -> Integer {
+    words: [258]u64
+    for i: 0..127 { for j: 0..127 { words[i+j] += cast(u64)a.limbs[i]*cast(u64)b.limbs[j] } }
+    for i: 0..255 { words[i+1] += words[i]>>cast(u64)16; words[i] &= cast(u64)65535 }
+    for i: 0..127 {
+        factor := (words[i]*cast(u64)modulus.inverse)&cast(u64)65535; carry: u64
+        for j: 0..127 { at := i+j; next := words[at]+factor*cast(u64)modulus.value.limbs[j]+carry; words[at] = next&cast(u64)65535; carry = next>>cast(u64)16 }
+        at := i+128; next := words[at]+carry; words[at] = next&cast(u64)65535; words[at+1] += next>>cast(u64)16
+    }
+    result: Integer; for i: 0..127 { result.limbs[i] = cast(u32)words[i+128] }
+    return Reduce(*result,*modulus.value,cast(u32)words[256])
+}
+Power :: (base_bytes: []u8, exponent: []u8, modulus: *Modulus, output: []u8) -> bool {
+    if !modulus.valid || base_bytes.count > 256 || exponent.count > 256 || output.count != 256 { return false }
+    base := FromBytes(base_bytes); base = Reduce(*base,*modulus.value,0)
+    one: Integer; one.limbs[0] = 1
+    current := Multiply(*one,*modulus.squared,modulus); converted := Multiply(*base,*modulus.squared,modulus)
+    for i: 0..cast(s32)exponent.count-1 {
+        bit: s32 = 7
+        while bit >= 0 {
+            squared := Multiply(*current,*current,modulus); product := Multiply(*squared,*converted,modulus)
+            mask := cast(u32)0-((cast(u32)exponent[i]>>cast(u32)bit)&cast(u32)1)
+            for j: 0..127 { current.limbs[j] = (product.limbs[j]&mask)|(squared.limbs[j]&(~mask)) }; bit -= 1
+        }
+    }
+    result := Multiply(*current,*one,modulus); return ToBytes(*result,output)
+}
+Product :: (left: []u8, right: []u8, modulus: *Modulus, output: []u8) -> bool {
+    if !modulus.valid || left.count>256 || right.count>256 || output.count!=256 { return false }
+    a := FromBytes(left); a = Reduce(*a,*modulus.value,0); b := FromBytes(right); b = Reduce(*b,*modulus.value,0)
+    converted := Multiply(*a,*modulus.squared,modulus); result := Multiply(*converted,*b,modulus); return ToBytes(*result,output)
+}
+Difference :: (left: []u8, right: []u8, modulus: *Modulus, output: []u8) -> bool {
+    if !modulus.valid || left.count>256 || right.count>256 || output.count!=256 { return false }
+    a := FromBytes(left); b := FromBytes(right); result := Subtract(*a,*b)
+    if Compare(*a,*b)<0 { carry: u32; for i: 0..127 { v := result.limbs[i]+modulus.value.limbs[i]+carry; result.limbs[i] = v&cast(u32)65535; carry = v>>cast(u32)16 } }
+    return ToBytes(*result,output)
+}

@@ -1,0 +1,14 @@
+[package]
+name = "crypto"
+module_roots = ["src", "tests"]
+
+[toolchain]
+git = "https://github.com/ziranlang/ziran.git"
+ref = "master"
+
+[exports]
+crypto = "src/crypto.zi"
+sha256 = "src/sha256.zi"
+sha1 = "src/sha1.zi"
+aes = "src/aes.zi"
+bigint = "src/bigint.zi"

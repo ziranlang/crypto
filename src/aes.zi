@@ -1,0 +1,74 @@
+// FIPS 197 AES-256. The S-box uses fixed field arithmetic, avoiding
+// secret-indexed lookup tables. The IGE mode is Telegram's specified mode.
+Key :: struct { bytes: [240]u8; valid: bool; }
+Multiply :: (left: u8, right: u8) -> u8 {
+    a := cast(u32)left; b := cast(u32)right; result: u32
+    for i: 0..7 { result ^= a & (cast(u32)0 - (b & cast(u32)1)); a = ((a << cast(u32)1) ^ (cast(u32)0x11b & (cast(u32)0 - (a >> cast(u32)7)))) & cast(u32)255; b >>= cast(u32)1 }
+    return cast(u8)result
+}
+Inverse :: (x: u8) -> u8 {
+    a := Multiply(x,x); b := Multiply(a,a); c := Multiply(b,b); d := Multiply(c,c); e := Multiply(d,d); f := Multiply(e,e); g := Multiply(f,f)
+    return Multiply(Multiply(Multiply(a,b),Multiply(c,d)),Multiply(Multiply(e,f),g))
+}
+Rotate :: (x: u8, n: u32) -> u8 { return cast(u8)((cast(u32)x << n) | (cast(u32)x >> (cast(u32)8-n))) }
+Sub :: (x: u8) -> u8 { a := Inverse(x); return a ^ Rotate(a,1) ^ Rotate(a,2) ^ Rotate(a,3) ^ Rotate(a,4) ^ cast(u8)0x63 }
+Unsub :: (x: u8) -> u8 { return Inverse(Rotate(x,1) ^ Rotate(x,3) ^ Rotate(x,6) ^ cast(u8)0x05) }
+Expand :: (bytes: []u8) -> Key {
+    key: Key; if bytes.count != 32 { return key }
+    for i: 0..31 { key.bytes[i] = bytes[i] }
+    at: s32 = 32; rc: u8 = 1
+    while at < 240 {
+        word: [4]u8; for i: 0..3 { word[i] = key.bytes[at-4+i] }
+        if at % 32 == 0 { first := word[0]; word[0] = Sub(word[1]) ^ rc; word[1] = Sub(word[2]); word[2] = Sub(word[3]); word[3] = Sub(first); rc = Multiply(rc,2) }
+        else if at % 32 == 16 { for i: 0..3 { word[i] = Sub(word[i]) } }
+        for i: 0..3 { key.bytes[at] = key.bytes[at-32] ^ word[i]; at += 1 }
+    }; key.valid = true; return key
+}
+Add :: (state: []u8, key: *Key, round: s32) { for i: 0..15 { state[i] ^= key.bytes[round*16+i] } }
+Shift :: (state: []u8, decrypt: bool) {
+    old: [16]u8; for i: 0..15 { old[i] = state[i] }
+    for row: 0..3 { for col: 0..3 { source := (col+row)%4; if decrypt { source = (col+4-row)%4 }; state[col*4+row] = old[source*4+row] } }
+}
+Mix :: (state: []u8, decrypt: bool) {
+    for col: 0..3 {
+        i := col*4; a := state[i]; b := state[i+1]; c := state[i+2]; d := state[i+3]
+        if decrypt {
+            state[i] = Multiply(a,14)^Multiply(b,11)^Multiply(c,13)^Multiply(d,9)
+            state[i+1] = Multiply(a,9)^Multiply(b,14)^Multiply(c,11)^Multiply(d,13)
+            state[i+2] = Multiply(a,13)^Multiply(b,9)^Multiply(c,14)^Multiply(d,11)
+            state[i+3] = Multiply(a,11)^Multiply(b,13)^Multiply(c,9)^Multiply(d,14)
+        } else {
+            state[i] = Multiply(a,2)^Multiply(b,3)^c^d
+            state[i+1] = a^Multiply(b,2)^Multiply(c,3)^d
+            state[i+2] = a^b^Multiply(c,2)^Multiply(d,3)
+            state[i+3] = Multiply(a,3)^b^c^Multiply(d,2)
+        }
+    }
+}
+Block :: (key: *Key, input: []u8, output: []u8, decrypt: bool) -> bool {
+    if !key.valid || input.count != 16 || output.count != 16 { return false }
+    state: [16]u8; for i: 0..15 { state[i] = input[i] }
+    if decrypt {
+        Add(state[:],key,14); round: s32 = 13
+        while round >= 0 { Shift(state[:],true); for i: 0..15 { state[i] = Unsub(state[i]) }; Add(state[:],key,round); if round > 0 { Mix(state[:],true) }; round -= 1 }
+    } else {
+        Add(state[:],key,0)
+        for round: 1..14 { for i: 0..15 { state[i] = Sub(state[i]) }; Shift(state[:],false); if round < 14 { Mix(state[:],false) }; Add(state[:],key,cast(s32)round) }
+    }
+    for i: 0..15 { output[i] = state[i] }; return true
+}
+Ige :: (key_bytes: []u8, iv: []u8, input: []u8, output: []u8, decrypt: bool) -> bool {
+    if iv.count != 32 || input.count % 16 != 0 || output.count != input.count { return false }
+    key := Expand(key_bytes); if !key.valid { return false }
+    previous_c: [16]u8; previous_p: [16]u8; block: [16]u8; saved: [16]u8
+    for i: 0..15 { previous_c[i] = iv[i]; previous_p[i] = iv[i+16] }
+    at: s32 = 0
+    while at < input.count {
+        for i: 0..15 { saved[i] = input[at+i]; block[i] = saved[i] ^ (ifx decrypt then previous_p[i] else previous_c[i]) }
+        if !Block(*key,block[:],block[:],decrypt) { return false }
+        for i: 0..15 {
+            output[at+i] = block[i] ^ (ifx decrypt then previous_c[i] else previous_p[i])
+            if decrypt { previous_c[i] = saved[i]; previous_p[i] = output[at+i] } else { previous_c[i] = output[at+i]; previous_p[i] = saved[i] }
+        }; at += 16
+    }; return true
+}

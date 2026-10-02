@@ -1,0 +1,22 @@
+using Hash :: #import "sha256";
+using LegacyHash :: #import "sha1";
+using Aes :: #import "aes";
+Equal :: (a: []u8, b: []u8) -> bool {
+    if a.count != b.count { return false }; difference: u8
+    for i: 0..cast(s32)a.count-1 { difference |= a[i] ^ b[i] }; return difference == cast(u8)0
+}
+Wipe :: (bytes: []u8) { for i: 0..cast(s32)bytes.count-1 { bytes[i] = 0 } }
+// Arbitrary salt length and output length; no silent truncation.
+Pbkdf2 :: (password: []u8, salt: []u8, iterations: s32, output: []u8) -> bool {
+    if salt.count > 1024 || output.count <= 0 || output.count > 1024 || iterations <= 0 || iterations > 1000000 { return false }
+    input: [1028]u8; u: [32]u8; t: [32]u8
+    for i: 0..cast(s32)salt.count-1 { input[i] = salt[i] }
+    block: s32 = 1; at: s32 = 0
+    while at < output.count {
+        for i: 0..3 { input[salt.count+i] = cast(u8)(cast(u32)block >> cast(u32)(24-i*8)) }
+        if Hash.HmacSha256(*password[0],password.count,*input[0],salt.count+4,*u[0]) != 1 { return false }
+        for i: 0..31 { t[i] = u[i] }
+        for round: 1..iterations-1 { if Hash.HmacSha256(*password[0],password.count,*u[0],32,*u[0]) != 1 { return false }; for i: 0..31 { t[i] ^= u[i] } }
+        for i: 0..31 { if at < output.count { output[at] = t[i]; at += 1 } }; block += 1
+    }; Wipe(u[:]); Wipe(t[:]); return true
+}

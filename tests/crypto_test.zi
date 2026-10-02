@@ -1,0 +1,30 @@
+Crypto :: #import "crypto";
+Hash :: #import "sha256";
+Sha1 :: #import "sha1";
+Aes :: #import "aes";
+Big :: #import "bigint";
+#import "std/byte_text_linux"
+failed: s32;
+Check :: (ok: bool, label: string) { if !ok { failed += 1; print("FAIL %\n", label) } }
+Hex :: (text: string, bytes: []u8) { for i: 0..cast(s32)bytes.count-1 { bytes[i] = cast(u8)(Hash.HexNibble(text[i*2])*16+Hash.HexNibble(text[i*2+1])) } }
+Main :: () -> s32 {
+    abc: [3]u8 = .{97,98,99}; expected: [64]u8; result: [64]u8
+    Hash.Sha256(*abc[0],3,*result[0]); Hex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",expected[:32]); Check(Crypto.Equal(result[:32],expected[:32]),"FIPS SHA-256 abc")
+    unused Sha1.Sha1(abc[:],result[:20]); Hex("a9993e364706816aba3e25717850c26c9cd0d89d",expected[:20]); Check(Crypto.Equal(result[:20],expected[:20]),"SHA-1 abc")
+    key: [32]u8; plain: [16]u8; cipher: [16]u8; recovered: [16]u8
+    Hex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",key[:]); Hex("00112233445566778899aabbccddeeff",plain[:])
+    expanded := Aes.Expand(key[:]); Check(Aes.Block(*expanded,plain[:],cipher[:],false),"AES block accepts exact sizes")
+    Hex("8ea2b7ca516745bfeafc49904b496089",expected[:16]); Check(Crypto.Equal(cipher[:],expected[:16]),"FIPS 197 AES-256 encryption")
+    Check(Aes.Block(*expanded,cipher[:],recovered[:],true) && Crypto.Equal(plain[:],recovered[:]),"FIPS AES-256 decryption")
+    password: [8]u8 = .{112,97,115,115,119,111,114,100}; salt: [4]u8 = .{115,97,108,116}
+    Check(Crypto.Pbkdf2(password[:],salt[:],1,result[:64]),"PBKDF2 supports multiple output blocks")
+    Hex("120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b4dbf3a2f3dad3377264bb7b8e8330d4efc7451418617dabef683735361cdc18c",expected[:]); Check(Crypto.Equal(result[:],expected[:]),"PBKDF2-HMAC-SHA256 known answer")
+    iv: [32]u8; data: [32]u8; encrypted: [32]u8; restored: [32]u8
+    for i: 0..31 { iv[i] = cast(u8)i; data[i] = cast(u8)(i*7) }
+    Check(Aes.Ige(key[:],iv[:],data[:],encrypted[:],false) && Aes.Ige(key[:],iv[:],encrypted[:],restored[:],true) && Crypto.Equal(data[:],restored[:]),"AES-IGE round trip")
+    Check(!Aes.Ige(key[:],iv[:31],data[:],encrypted[:],false),"IGE rejects malformed IV")
+    prime: [256]u8; power: [256]u8; base: [1]u8 = .{2}; exponent: [1]u8 = .{13}
+    for i: 0..255 { prime[i] = 255 }; prime[255] = 189
+    modulus := Big.Prepare(prime[:]); Check(Big.Power(base[:],exponent[:],*modulus,power[:]) && power[254]==cast(u8)32 && power[255]==cast(u8)0,"2048-bit Montgomery exponentiation")
+    if failed == 0 { print("Cryptographic known-answer checks passed\n") }; return failed
+}
