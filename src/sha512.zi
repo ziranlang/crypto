@@ -1,0 +1,55 @@
+// FIPS 180-4 SHA-512 and HMAC-SHA-512 in portable Ziran.
+Context :: struct { state: [8]u64; block: [128]u8; used: s32; length: u64; }
+Constants: [80]u64=.{
+0x428a2f98d728ae22,0x7137449123ef65cd,0xb5c0fbcfec4d3b2f,0xe9b5dba58189dbbc,
+0x3956c25bf348b538,0x59f111f1b605d019,0x923f82a4af194f9b,0xab1c5ed5da6d8118,
+0xd807aa98a3030242,0x12835b0145706fbe,0x243185be4ee4b28c,0x550c7dc3d5ffb4e2,
+0x72be5d74f27b896f,0x80deb1fe3b1696b1,0x9bdc06a725c71235,0xc19bf174cf692694,
+0xe49b69c19ef14ad2,0xefbe4786384f25e3,0x0fc19dc68b8cd5b5,0x240ca1cc77ac9c65,
+0x2de92c6f592b0275,0x4a7484aa6ea6e483,0x5cb0a9dcbd41fbd4,0x76f988da831153b5,
+0x983e5152ee66dfab,0xa831c66d2db43210,0xb00327c898fb213f,0xbf597fc7beef0ee4,
+0xc6e00bf33da88fc2,0xd5a79147930aa725,0x06ca6351e003826f,0x142929670a0e6e70,
+0x27b70a8546d22ffc,0x2e1b21385c26c926,0x4d2c6dfc5ac42aed,0x53380d139d95b3df,
+0x650a73548baf63de,0x766a0abb3c77b2a8,0x81c2c92e47edaee6,0x92722c851482353b,
+0xa2bfe8a14cf10364,0xa81a664bbc423001,0xc24b8b70d0f89791,0xc76c51a30654be30,
+0xd192e819d6ef5218,0xd69906245565a910,0xf40e35855771202a,0x106aa07032bbd1b8,
+0x19a4c116b8d2d0c8,0x1e376c085141ab53,0x2748774cdf8eeb99,0x34b0bcb5e19b48a8,
+0x391c0cb3c5c95a63,0x4ed8aa4ae3418acb,0x5b9cca4f7763e373,0x682e6ff3d6b2b8a3,
+0x748f82ee5defb2fc,0x78a5636f43172f60,0x84c87814a1f0ab72,0x8cc702081a6439ec,
+0x90befffa23631e28,0xa4506cebde82bde9,0xbef9a3f7b2c67915,0xc67178f2e372532b,
+0xca273eceea26619c,0xd186b8c721c0c207,0xeada7dd6cde0eb1e,0xf57d4f7fee6ed178,
+0x06f067aa72176fba,0x0a637dc5a2c898a6,0x113f9804bef90dae,0x1b710b35131c471b,
+0x28db77f523047d84,0x32caab7b40c72493,0x3c9ebe0a15c9bebc,0x431d67c49c100d4c,
+0x4cc5d4becb3e42b6,0x597f299cfc657e2a,0x5fcb6fab3ad6faec,0x6c44198c4a475817};
+Rotate :: (x: u64,n: u64) -> u64 { return (x>>n)|(x<<(cast(u64)64-n)) }
+Transform :: (context: *Context) {
+    w: [80]u64
+    for i: 0..15 { for j: 0..7 { w[i]=(w[i]<<cast(u64)8)|cast(u64)context.block[i*8+j] } }
+    for i: 16..79 { a:=w[i-15]; b:=w[i-2]; w[i]=w[i-16]+(Rotate(a,1)^Rotate(a,8)^(a>>cast(u64)7))+w[i-7]+(Rotate(b,19)^Rotate(b,61)^(b>>cast(u64)6)) }
+    a:=context.state[0];b:=context.state[1];c:=context.state[2];d:=context.state[3];e:=context.state[4];f:=context.state[5];g:=context.state[6];h:=context.state[7]
+    for i: 0..79 { t:=h+(Rotate(e,14)^Rotate(e,18)^Rotate(e,41))+((e&f)^((~e)&g))+Constants[i]+w[i]; u: u64=(Rotate(a,28)^Rotate(a,34)^Rotate(a,39))+((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d+t;d=c;c=b;b=a;a=t+u }
+    context.state[0]+=a;context.state[1]+=b;context.state[2]+=c;context.state[3]+=d;context.state[4]+=e;context.state[5]+=f;context.state[6]+=g;context.state[7]+=h
+}
+Start :: (context: *Context) { context.state=.{0x6a09e667f3bcc908,0xbb67ae8584caa73b,0x3c6ef372fe94f82b,0xa54ff53a5f1d36f1,0x510e527fade682d1,0x9b05688c2b3e6c1f,0x1f83d9abfb41bd6b,0x5be0cd19137e2179};context.used=0;context.length=0 }
+Update :: (context: *Context,bytes: []u8) { for i: 0..cast(s32)bytes.count-1 { context.block[context.used]=bytes[i];context.used+=1;context.length+=cast(u64)1;if context.used==128 { Transform(context);context.used=0 } } }
+Finish :: (context: *Context,output: []u8) -> bool {
+    if output.count!=64 { return false };bits:=context.length*cast(u64)8;context.block[context.used]=128;context.used+=1
+    if context.used>112 { while context.used<128 { context.block[context.used]=0;context.used+=1 };Transform(context);context.used=0 }
+    while context.used<120 { context.block[context.used]=0;context.used+=1 };for i: 0..7 { context.block[127-i]=cast(u8)(bits>>cast(u64)(i*8)) };Transform(context)
+    for i: 0..63 { output[i]=cast(u8)(context.state[i/8]>>cast(u64)(56-8*(i%8))) };return true
+}
+Sha512 :: (input: []u8,output: []u8) -> bool { context: Context;Start(*context);Update(*context,input);return Finish(*context,output) }
+Hmac :: (key: []u8,input: []u8,output: []u8) -> bool {
+    block: [128]u8;pad: [128]u8;digest: [64]u8
+    if key.count>128 { if !Sha512(key,block[:64]) { return false } } else { for i: 0..cast(s32)key.count-1 { block[i]=key[i] } }
+    for i: 0..127 { pad[i]=block[i]^cast(u8)0x36 };context: Context;Start(*context);Update(*context,pad[:]);Update(*context,input);unused Finish(*context,digest[:])
+    for i: 0..127 { pad[i]=block[i]^cast(u8)0x5c };Start(*context);Update(*context,pad[:]);Update(*context,digest[:]);return Finish(*context,output)
+}
+Pbkdf2 :: (password: []u8,salt: []u8,iterations: s32,output: []u8) -> bool {
+    if salt.count>1024 || output.count<=0 || output.count>1024 || iterations<=0 || iterations>1000000 { return false }
+    input: [1028]u8;u: [64]u8;t: [64]u8;for i: 0..cast(s32)salt.count-1 { input[i]=salt[i] };block: s32=1;at: s32
+    while at<output.count {
+        for i: 0..3 { input[salt.count+i]=cast(u8)(cast(u32)block>>cast(u32)(24-i*8)) };if !Hmac(password,input[:salt.count+4],u[:]) { return false };for i: 0..63 { t[i]=u[i] }
+        for round: 1..iterations-1 { if !Hmac(password,u[:],u[:]) { return false };for i: 0..63 { t[i]^=u[i] } };for i: 0..63 { if at<output.count { output[at]=t[i];at+=1 } };block+=1
+    };return true
+}

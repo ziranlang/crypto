@@ -24,7 +24,7 @@ Reduce :: (value: *Integer, modulus: *Integer, high: u32) -> Integer {
     borrow: u64
     for i: 0..127 { v := cast(u64)value.limbs[i]-cast(u64)modulus.limbs[i]-borrow; borrow = v >> cast(u64)63 }
     take := cast(u32)1-cast(u32)borrow
-    if high != cast(u32)0 { take = 1 }
+    take |= (high | (cast(u32)0-high)) >> cast(u32)31
     mask := cast(u32)0-take; result: Integer
     for i: 0..127 { result.limbs[i] = (difference.limbs[i]&mask) | (value.limbs[i]&(~mask)) }; return result
 }
@@ -55,7 +55,7 @@ Multiply :: (a: *Integer, b: *Integer, modulus: *Modulus) -> Integer {
     return Reduce(*result,*modulus.value,cast(u32)words[256])
 }
 Power :: (base_bytes: []u8, exponent: []u8, modulus: *Modulus, output: []u8) -> bool {
-    if !modulus.valid || base_bytes.count > 256 || exponent.count > 256 || output.count != 256 { return false }
+    if !modulus.valid || base_bytes.count > 256 || exponent.count > 512 || output.count != 256 { return false }
     base := FromBytes(base_bytes); base = Reduce(*base,*modulus.value,0)
     one: Integer; one.limbs[0] = 1
     current := Multiply(*one,*modulus.squared,modulus); converted := Multiply(*base,*modulus.squared,modulus)

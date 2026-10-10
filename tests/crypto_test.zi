@@ -3,6 +3,7 @@ Hash :: #import "sha256";
 Sha1 :: #import "sha1";
 Aes :: #import "aes";
 Big :: #import "bigint";
+Sha512 :: #import "sha512";
 #import "std/byte_text_linux"
 failed: s32;
 Check :: (ok: bool, label: string) { if !ok { failed += 1; print("FAIL %\n", label) } }
@@ -11,6 +12,7 @@ Main :: () -> s32 {
     abc: [3]u8 = .{97,98,99}; expected: [64]u8; result: [64]u8
     Hash.Sha256(*abc[0],3,*result[0]); Hex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",expected[:32]); Check(Crypto.Equal(result[:32],expected[:32]),"FIPS SHA-256 abc")
     unused Sha1.Sha1(abc[:],result[:20]); Hex("a9993e364706816aba3e25717850c26c9cd0d89d",expected[:20]); Check(Crypto.Equal(result[:20],expected[:20]),"SHA-1 abc")
+    unused Sha512.Sha512(abc[:],result[:]); Hex("ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f",expected[:]); Check(Crypto.Equal(result[:],expected[:]),"FIPS SHA-512 abc")
     key: [32]u8; plain: [16]u8; cipher: [16]u8; recovered: [16]u8
     Hex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",key[:]); Hex("00112233445566778899aabbccddeeff",plain[:])
     expanded := Aes.Expand(key[:]); Check(Aes.Block(*expanded,plain[:],cipher[:],false),"AES block accepts exact sizes")
