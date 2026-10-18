@@ -1,3 +1,5 @@
+// Ordinary library procedures retain package-qualified native symbols.
+// A consuming executable owns any explicit C ABI it chooses to export.
 // SHA-256 and HMAC-SHA-256, extracted from Waozi’s Daochi implementation.
 // Portable Ziran; no foreign cryptographic implementation.
 Sha256Context :: struct {
@@ -152,7 +154,6 @@ Sha256Finish :: (context: *Sha256Context, output: *u8) {
     }
 }
 
-#program_export
 Sha256 :: (data: *u8, length: s64, output: *u8) {
     if output == null || length < 0 || (data == null && length > 0) {
         return
@@ -185,7 +186,6 @@ HexNibble :: (value: u8) -> s32 {
     return -1
 }
 
-#program_export
 BytesToHex :: (bytes: *u8, length: s64,
     output: *u8, output_size: s64) -> s32 {
     if output == null || output_size <= 0 {
@@ -206,7 +206,6 @@ BytesToHex :: (bytes: *u8, length: s64,
     return 1
 }
 
-#program_export
 HexToBytes :: (hex: string, output: *u8, output_size: s64) -> s32 {
     if output == null || output_size < 0 ||
         output_size > 4611686018427387903 ||
@@ -226,7 +225,6 @@ HexToBytes :: (hex: string, output: *u8, output_size: s64) -> s32 {
     return 1
 }
 
-#program_export
 Sha256Hex :: (data: *u8, length: s64, output: *u8) {
     if output == null {
         return
@@ -323,7 +321,6 @@ HmacSha256Input :: (key: *u8, key_length: s64,
     return 1
 }
 
-#program_export
 HmacSha256 :: (key: *u8, key_length: s64,
     data: *u8, data_length: s64, output: *u8) -> s32 {
     return HmacSha256Input(key, key_length, "", false,
@@ -331,7 +328,6 @@ HmacSha256 :: (key: *u8, key_length: s64,
         "", false, output)
 }
 
-#program_export
 HmacSha256Text :: (key: *u8, key_length: s64,
     data: string, output: *u8) -> s32 {
     return HmacSha256Input(key, key_length, "", false,
