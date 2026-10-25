@@ -26,6 +26,12 @@ Main :: () -> s32 {
     expanded := Aes.Expand(key[:]); Check(Aes.Block(*expanded,plain[:],cipher[:],false),"AES block accepts exact sizes")
     Hex("8ea2b7ca516745bfeafc49904b496089",expected[:16]); Check(Crypto.Equal(cipher[:],expected[:16]),"FIPS 197 AES-256 encryption")
     Check(Aes.Block(*expanded,cipher[:],recovered[:],true) && Crypto.Equal(plain[:],recovered[:]),"FIPS AES-256 decryption")
+    // The string forms match FIPS 180-2, RFC 4231 case 2 and RFC 7914's
+    // PBKDF2-HMAC-SHA-256 vectors.
+    text_digest := Hash.Sha256Of("abc"); Hex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",expected[:32]); Check(Crypto.Equal(text_digest[:],expected[:32]),"SHA-256 of a string")
+    mac := Hash.HmacSha256Of("Jefe","what do ya want for nothing?"); Hex("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",expected[:32]); Check(Crypto.Equal(mac[:],expected[:32]),"RFC 4231 HMAC-SHA-256 case 2")
+    derived := Hash.Pbkdf2Sha256("password","salt",1); Hex("120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b",expected[:32]); Check(Crypto.Equal(derived[:],expected[:32]),"PBKDF2-HMAC-SHA-256 one round")
+    derived = Hash.Pbkdf2Sha256("password","salt",4096); Hex("c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a",expected[:32]); Check(Crypto.Equal(derived[:],expected[:32]),"PBKDF2-HMAC-SHA-256 4096 rounds")
     password: [8]u8 = .{112,97,115,115,119,111,114,100}; salt: [4]u8 = .{115,97,108,116}
     Check(Crypto.Pbkdf2(password[:],salt[:],1,result[:64]),"PBKDF2 supports multiple output blocks")
     Hex("120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b4dbf3a2f3dad3377264bb7b8e8330d4efc7451418617dabef683735361cdc18c",expected[:]); Check(Crypto.Equal(result[:],expected[:]),"PBKDF2-HMAC-SHA256 known answer")
