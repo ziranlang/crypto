@@ -28,10 +28,11 @@ Sha256RotateRight :: (value: u32, bits: u32) -> u32 {
 }
 
 Sha256Transform :: (context: *Sha256Context) {
-    Sha256TransformBlock(context, *context.block[0])
+    Sha256TransformBlock(context, context.block[:])
 }
 
-Sha256TransformBlock :: (context: *Sha256Context, block: *u8) {
+// One 64-byte block. It takes a slice, so portable bundles can hash too.
+Sha256TransformBlock :: (context: *Sha256Context, block: []u8) {
     words: [64]u32
     index: s32 = 0
     while index < 16 {
@@ -111,7 +112,30 @@ Sha256Update :: (context: *Sha256Context, data: *u8, length: s64) {
     while index < length {
         // Whole blocks are hashed where they lie instead of byte by byte.
         if context.block_length == 0 && length - index >= 64 {
-            Sha256TransformBlock(context, *data[index])
+            whole: [64]u8
+            for at: 0..63 { whole[at] = data[index + at] }
+            Sha256TransformBlock(context, whole[:])
+            context.bit_length += 512
+            index += 64
+            continue
+        }
+        context.block[context.block_length] = data[index]
+        context.block_length += 1
+        if context.block_length == 64 {
+            Sha256Transform(context)
+            context.bit_length += 512
+            context.block_length = 0
+        }
+        index += 1
+    }
+}
+
+// Bytes from a slice, for portable bundles; Sha256Update takes a pointer.
+Sha256UpdateBytes :: (context: *Sha256Context, data: []u8) {
+    index: s64 = 0
+    while index < data.count {
+        if context.block_length == 0 && data.count - index >= 64 {
+            Sha256TransformBlock(context, data[index:index + 64])
             context.bit_length += 512
             index += 64
             continue
@@ -128,6 +152,13 @@ Sha256Update :: (context: *Sha256Context, data: *u8, length: s64) {
 }
 
 Sha256Finish :: (context: *Sha256Context, output: *u8) {
+    digest: [32]u8
+    Sha256FinishBytes(context, digest[:])
+    for index: 0..31 { output[index] = digest[index] }
+}
+
+// The digest into a slice of 32 bytes, for portable bundles.
+Sha256FinishBytes :: (context: *Sha256Context, output: []u8) {
     tail_length := context.block_length
     index := tail_length
     context.block[index] = cast(u8)0x80
@@ -354,13 +385,32 @@ Sha256Of :: (data: string) -> [32]u8 {
     context: Sha256Context
     Sha256Initialize(*context)
     Sha256UpdateText(*context, data)
-    Sha256Finish(*context, *digest[0])
+    Sha256FinishBytes(*context, digest[:])
     return digest
 }
 
 HmacSha256Of :: (key: string, message: string) -> [32]u8 {
-    digest: [32]u8
-    unused HmacSha256Input(null, key.count, key, true, null, message.count, message, true, *digest[0])
+    block: [HmacBlockBytes]u8
+    if key.count > HmacBlockBytes {
+        hashed := Sha256Of(key)
+        for index: 0..31 { block[index] = hashed[index] }
+    } else {
+        for index: cast(s64)0..key.count - 1 { block[index] = key[index] }
+    }
+    pad: [HmacBlockBytes]u8
+    for index: 0..HmacBlockBytes - 1 { pad[index] = block[index] ^ cast(u8)0x36 }
+    context: Sha256Context
+    Sha256Initialize(*context)
+    Sha256UpdateBytes(*context, pad[:])
+    Sha256UpdateText(*context, message)
+    inner: [Sha256DigestBytes]u8
+    Sha256FinishBytes(*context, inner[:])
+    for index: 0..HmacBlockBytes - 1 { pad[index] = block[index] ^ cast(u8)0x5c }
+    Sha256Initialize(*context)
+    Sha256UpdateBytes(*context, pad[:])
+    Sha256UpdateBytes(*context, inner[:])
+    digest: [Sha256DigestBytes]u8
+    Sha256FinishBytes(*context, digest[:])
     return digest
 }
 
