@@ -1,0 +1,43 @@
+// Constant-time comparison and compiler-safe secret zeroization.
+// On C/Linux targets, explicit_bzero prevents dead-store elimination.
+#if TARGET == .C && OS == .LINUX {
+    #scope_file
+    libc :: #system_library "c";
+    ExplicitBzero :: (data: *void, length: usize) #foreign libc "explicit_bzero";
+}
+
+#scope_export
+ConstantTimeEqual :: (a: []u8, b: []u8) -> bool {
+    if a.count != b.count { return false }
+    difference: u8 = 0
+    for index: 0..cast(s32)a.count - 1 {
+        difference |= a[index] ^ b[index]
+    }
+    return difference == cast(u8)0
+}
+
+SecureWipePointer :: (data: *u8, length: s64) {
+    if data == null || length <= 0 { return }
+    #if TARGET == .C && OS == .LINUX {
+        ExplicitBzero(cast(*void)data, cast(usize)length)
+    } else {
+        index: s64 = 0
+        while index < length {
+            data[index] = 0
+            index += 1
+        }
+    }
+}
+
+SecureWipe :: (bytes: []u8) {
+    if bytes.count <= 0 { return }
+    #if TARGET == .C && OS == .LINUX {
+        ExplicitBzero(cast(*void)*bytes[0], cast(usize)bytes.count)
+    } else {
+        index: s64 = 0
+        while index < bytes.count {
+            bytes[index] = 0
+            index += 1
+        }
+    }
+}

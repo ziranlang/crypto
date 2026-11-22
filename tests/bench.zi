@@ -1,0 +1,102 @@
+// Benchmark comparing:
+// 1. PBKDF2-HMAC-SHA-256 (100,000 rounds): naive HMAC-per-round vs precomputed midstate (crypto/kdf)
+// 2. 8 MiB XChaCha20-Poly1305: portable scalar (crypto/chacha20) vs SIMD libsodium (crypto/native)
+// 3. 8 MiB ChaCha20-Poly1305 (entity chunk): portable scalar vs SIMD libsodium
+Hash :: #import "sha256";
+ChaCha :: #import "chacha20";
+Kdf :: #import "kdf";
+Native :: #import "native";
+Wipe :: #import "wipe";
+clock :: #import "std/timer";
+#import "std/byte_text_linux"
+
+#scope_file
+c :: #system_library "c";
+Malloc :: (bytes: usize) -> *void #foreign c "malloc";
+Free :: (ptr: *void) #foreign c "free";
+
+NaivePbkdf2 :: (password: []u8, salt: []u8, iterations: u64, output: []u8) {
+    block: [68]u8
+    for i: 0..cast(s32)salt.count - 1 { block[i] = salt[i] }
+    block[salt.count + 3] = 1
+    u: [32]u8
+    t: [32]u8
+    unused Hash.HmacSha256(*password[0], password.count, *block[0], salt.count + 4, *u[0])
+    for i: 0..31 { t[i] = u[i] }
+    round: u64 = 1
+    while round < iterations {
+        unused Hash.HmacSha256(*password[0], password.count, *u[0], 32, *u[0])
+        for i: 0..31 { t[i] ^= u[i] }
+        round += 1
+    }
+    for i: 0..31 { output[i] = t[i] }
+}
+
+#scope_export
+Main :: () -> s32 {
+    if !Native.Initialize() {
+        print("libsodium init failed\n")
+        return 1
+    }
+    pass: [16]u8 = .{112,97,115,115,119,111,114,100,49,50,51,52,53,54,55,56}
+    salt: [16]u8 = .{1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16}
+    out_naive: [32]u8
+    out_fast: [32]u8
+    rounds: u64 = 100000
+
+    t0 := clock.MonotonicMilliseconds()
+    NaivePbkdf2(pass[:], salt[:], rounds, out_naive[:])
+    t1 := clock.MonotonicMilliseconds()
+    ok := Kdf.Pbkdf2Sha256(pass[:], salt[:], rounds, out_fast[:])
+    t2 := clock.MonotonicMilliseconds()
+    if !ok || !Wipe.ConstantTimeEqual(out_naive[:], out_fast[:]) {
+        print("PBKDF2 parity mismatch\n")
+        return 1
+    }
+    print("PBKDF2-SHA256 (% rounds): naive=% ms, precomputed-midstate=% ms\n", rounds, t1 - t0, t2 - t1)
+
+    chunk_size: s64 = 8388608
+    plain_ptr := cast(*u8)Malloc(cast(usize)chunk_size)
+    sealed_scalar_ptr := cast(*u8)Malloc(cast(usize)(chunk_size + 16))
+    sealed_simd_ptr := cast(*u8)Malloc(cast(usize)(chunk_size + 16))
+    if plain_ptr == null || sealed_scalar_ptr == null || sealed_simd_ptr == null { return 1 }
+    defer {
+        Free(cast(*void)plain_ptr)
+        Free(cast(*void)sealed_scalar_ptr)
+        Free(cast(*void)sealed_simd_ptr)
+    }
+    plain := BytesFromPointer(plain_ptr, cast(u64)chunk_size)
+    sealed_scalar := BytesFromPointer(sealed_scalar_ptr, cast(u64)(chunk_size + 16))
+    sealed_simd := BytesFromPointer(sealed_simd_ptr, cast(u64)(chunk_size + 16))
+    for i: cast(s64)0..chunk_size - 1 { plain[i] = cast(u8)(i & 255) }
+
+    key: [32]u8
+    nonce12: [12]u8
+    nonce24: [24]u8
+    aad: [24]u8 = .{100,97,111,99,104,105,45,101,110,116,105,116,121,45,118,49,47,98,108,111,98,47,112,48}
+    for i: 0..31 { key[i] = cast(u8)(i + 5) }
+    for i: 0..23 { nonce24[i] = cast(u8)(i + 11) }
+
+    s0 := clock.MonotonicMilliseconds()
+    n1 := ChaCha.ChaCha20Poly1305SealBytes(key[:], nonce12[:], plain, aad[:], sealed_scalar)
+    s1 := clock.MonotonicMilliseconds()
+    n2 := Native.ChaCha20Poly1305Seal(plain, aad[:], key[:], nonce12[:], sealed_simd)
+    s2 := clock.MonotonicMilliseconds()
+    if n1 != chunk_size + 16 || n2 != chunk_size + 16 || !Wipe.ConstantTimeEqual(sealed_scalar, sealed_simd) {
+        print("ChaCha20-Poly1305 parity mismatch\n")
+        return 1
+    }
+    print("8 MiB ChaCha20-Poly1305 (entity chunk): scalar=% ms, libsodium-SIMD=% ms\n", s1 - s0, s2 - s1)
+
+    x0 := clock.MonotonicMilliseconds()
+    m1 := ChaCha.XChaCha20Poly1305SealBytes(key[:], nonce24[:], plain, aad[:], sealed_scalar)
+    x1 := clock.MonotonicMilliseconds()
+    m2 := Native.XChaCha20Poly1305Seal(plain, aad[:], key[:], nonce24[:], sealed_simd)
+    x2 := clock.MonotonicMilliseconds()
+    if m1 != chunk_size + 16 || m2 != chunk_size + 16 || !Wipe.ConstantTimeEqual(sealed_scalar, sealed_simd) {
+        print("XChaCha20-Poly1305 parity mismatch\n")
+        return 1
+    }
+    print("8 MiB XChaCha20-Poly1305: scalar=% ms, libsodium-SIMD=% ms\n", x1 - x0, x2 - x1)
+    return 0
+}

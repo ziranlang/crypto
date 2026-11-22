@@ -1,6 +1,6 @@
 // Ordinary library procedures retain package-qualified native symbols.
 // A consuming executable owns any explicit C ABI it chooses to export.
-// SHA-256 and HMAC-SHA-256, extracted from Waozi’s Daochi implementation.
+// SHA-256 and HMAC-SHA-256, extracted from Waozi’s Mesh implementation.
 // Portable Ziran; no foreign cryptographic implementation.
 Sha256Context :: struct {
     state: [8]u32
@@ -62,7 +62,7 @@ Sha256TransformBlock :: (context: *Sha256Context, block: []u8) {
 
 // One 64-byte block read in place at BLOCK, for the pointer forms. Without a
 // bounds check per byte, a package hashes as fast on phones, which build at
-// -Oz, as it did with Daochi Client's own SHA-256.
+// -Oz, as it did with Mesh Client's own SHA-256.
 Sha256TransformAt :: (context: *Sha256Context, block: *u8) {
     index: s32 = 0
     while index < 16 {
@@ -448,17 +448,99 @@ HmacSha256Of :: (key: string, message: string) -> [32]u8 {
     return digest
 }
 
+HmacSha256State :: struct {
+    inner: Sha256Context
+    outer: Sha256Context
+}
+
+HmacSha256Prepare :: (state: *HmacSha256State, key: *u8, key_length: s64) {
+    block: [HmacBlockBytes]u8 = .[0]
+    pad: [HmacBlockBytes]u8
+    if key_length > HmacBlockBytes {
+        Sha256(key, key_length, *block[0])
+    } else if key != null && key_length > 0 {
+        index: s64 = 0
+        while index < key_length {
+            block[index] = key[index]
+            index += 1
+        }
+    }
+    for index: 0..HmacBlockBytes - 1 { pad[index] = block[index] ^ cast(u8)0x36 }
+    Sha256Initialize(*state.inner)
+    Sha256Update(*state.inner, *pad[0], HmacBlockBytes)
+    for index: 0..HmacBlockBytes - 1 { pad[index] = block[index] ^ cast(u8)0x5c }
+    Sha256Initialize(*state.outer)
+    Sha256Update(*state.outer, *pad[0], HmacBlockBytes)
+    for index: 0..HmacBlockBytes - 1 {
+        block[index] = 0
+        pad[index] = 0
+    }
+}
+
+HmacSha256PrepareText :: (state: *HmacSha256State, key: string) {
+    block: [HmacBlockBytes]u8 = .[0]
+    pad: [HmacBlockBytes]u8
+    if key.count > HmacBlockBytes {
+        hashed := Sha256Of(key)
+        for index: 0..31 { block[index] = hashed[index] }
+    } else {
+        for index: cast(s64)0..key.count - 1 { block[index] = key[index] }
+    }
+    for index: 0..HmacBlockBytes - 1 { pad[index] = block[index] ^ cast(u8)0x36 }
+    Sha256Initialize(*state.inner)
+    Sha256UpdateBytes(*state.inner, pad[:])
+    for index: 0..HmacBlockBytes - 1 { pad[index] = block[index] ^ cast(u8)0x5c }
+    Sha256Initialize(*state.outer)
+    Sha256UpdateBytes(*state.outer, pad[:])
+    for index: 0..HmacBlockBytes - 1 {
+        block[index] = 0
+        pad[index] = 0
+    }
+}
+
+HmacSha256Compute :: (state: *HmacSha256State, data: *u8, data_length: s64, output: *u8) {
+    inner := state.inner
+    if data != null && data_length > 0 {
+        Sha256Update(*inner, data, data_length)
+    }
+    inner_digest: [Sha256DigestBytes]u8
+    Sha256Finish(*inner, *inner_digest[0])
+    outer := state.outer
+    Sha256Update(*outer, *inner_digest[0], Sha256DigestBytes)
+    Sha256Finish(*outer, output)
+}
+
+HmacSha256ComputeBytes :: (state: *HmacSha256State, data: []u8, output: []u8) {
+    inner := state.inner
+    if data.count > 0 {
+        Sha256UpdateBytes(*inner, data)
+    }
+    inner_digest: [Sha256DigestBytes]u8
+    Sha256FinishBytes(*inner, inner_digest[:])
+    outer := state.outer
+    Sha256UpdateBytes(*outer, inner_digest[:])
+    Sha256FinishBytes(*outer, output)
+}
+
+HmacSha256Wipe :: (state: *HmacSha256State) {
+    state.* = HmacSha256State.{}
+}
+
 Pbkdf2Sha256 :: (password: string, salt: string, iterations: s32) -> [32]u8 {
+    state: HmacSha256State
+    HmacSha256PrepareText(*state, password)
     block: [1028]u8
     length: s64 = ifx salt.count > 1024 then 1024 else salt.count
     for index: cast(s64)0..length - 1 { block[index] = salt[index] }
     block[length + 3] = cast(u8)1
-    output := HmacSha256Of(password, TextView(block[0:length + 4]))
+    output: [32]u8
+    HmacSha256ComputeBytes(*state, block[0:length + 4], output[:])
     previous := output
     for round: 1..iterations - 1 {
-        previous = HmacSha256Of(password, TextView(previous[0:32]))
+        HmacSha256ComputeBytes(*state, previous[:], previous[:])
         for index: 0..31 { output[index] ^= previous[index] }
     }
+    HmacSha256Wipe(*state)
     return output
 }
 

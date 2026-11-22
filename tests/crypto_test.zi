@@ -4,6 +4,9 @@ Sha1 :: #import "sha1";
 Aes :: #import "aes";
 Big :: #import "bigint";
 Sha512 :: #import "sha512";
+ChaCha :: #import "chacha20";
+Kdf :: #import "kdf";
+Wipe :: #import "wipe";
 #import "std/byte_text_linux"
 failed: s32;
 Check :: (ok: bool, label: string) { if !ok { failed += 1; print("FAIL %\n", label) } }
@@ -42,5 +45,37 @@ Main :: () -> s32 {
     prime: [256]u8; power: [256]u8; base: [1]u8 = .{2}; exponent: [1]u8 = .{13}
     for i: 0..255 { prime[i] = 255 }; prime[255] = 189
     modulus := Big.Prepare(prime[:]); Check(Big.Power(base[:],exponent[:],*modulus,power[:]) && power[254]==cast(u8)32 && power[255]==cast(u8)0,"2048-bit Montgomery exponentiation")
+    // RFC 5869 HKDF-SHA-256 test case 1.
+    hkdf_ikm: [22]u8; hkdf_salt: [13]u8; hkdf_info: [10]u8; hkdf_okm: [42]u8; hkdf_exp: [42]u8
+    Hex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b", hkdf_ikm[:])
+    Hex("000102030405060708090a0b0c", hkdf_salt[:])
+    Hex("f0f1f2f3f4f5f6f7f8f9", hkdf_info[:])
+    Hex("3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865", hkdf_exp[:])
+    Check(Kdf.HkdfSha256(hkdf_salt[:], hkdf_ikm[:], hkdf_info[:], hkdf_okm[:]) && Crypto.Equal(hkdf_okm[:], hkdf_exp[:]), "RFC 5869 HKDF-SHA-256 case 1")
+    // PBKDF2 with >32-byte salt does not truncate.
+    long_salt_a: [40]u8; long_salt_b: [40]u8; long_out_a: [32]u8; long_out_b: [32]u8
+    for i: 0..39 { long_salt_a[i] = cast(u8)i; long_salt_b[i] = cast(u8)i }
+    long_salt_b[39] ^= 1
+    Check(Kdf.Pbkdf2Sha256(password[:], long_salt_a[:], 2, long_out_a[:]) &&
+        Kdf.Pbkdf2Sha256(password[:], long_salt_b[:], 2, long_out_b[:]) &&
+        !Crypto.Equal(long_out_a[:], long_out_b[:]), "PBKDF2 preserves salt bytes beyond 32")
+    // ChaCha20-Poly1305 & XChaCha20-Poly1305 round trip + tamper rejection.
+    cc_key: [32]u8; cc_nonce: [12]u8; xcc_nonce: [24]u8; cc_aad: [4]u8 = .{1,2,3,4}; cc_plain: [12]u8 = .{10,20,30,40,50,60,70,80,90,100,110,120}
+    cc_sealed: [28]u8; cc_opened: [12]u8
+    for i: 0..31 { cc_key[i] = cast(u8)(i + 1) }
+    for i: 0..11 { cc_nonce[i] = cast(u8)(i + 7) }
+    for i: 0..23 { xcc_nonce[i] = cast(u8)(i + 3) }
+    Check(ChaCha.ChaCha20Poly1305SealBytes(cc_key[:], cc_nonce[:], cc_plain[:], cc_aad[:], cc_sealed[:]) == 28 &&
+        ChaCha.ChaCha20Poly1305OpenBytes(cc_key[:], cc_nonce[:], cc_sealed[:], cc_aad[:], cc_opened[:]) == 12 &&
+        Crypto.Equal(cc_plain[:], cc_opened[:]), "ChaCha20-Poly1305 round trip")
+    cc_sealed[0] ^= 1
+    Check(ChaCha.ChaCha20Poly1305OpenBytes(cc_key[:], cc_nonce[:], cc_sealed[:], cc_aad[:], cc_opened[:]) < 0, "ChaCha20-Poly1305 rejects tamper")
+    Check(ChaCha.XChaCha20Poly1305SealBytes(cc_key[:], xcc_nonce[:], cc_plain[:], cc_aad[:], cc_sealed[:]) == 28 &&
+        ChaCha.XChaCha20Poly1305OpenBytes(cc_key[:], xcc_nonce[:], cc_sealed[:], cc_aad[:], cc_opened[:]) == 12 &&
+        Crypto.Equal(cc_plain[:], cc_opened[:]), "XChaCha20-Poly1305 round trip")
+    Wipe.SecureWipe(cc_key[:])
+    wiped_ok := true
+    for i: 0..31 { if cc_key[i] != 0 { wiped_ok = false } }
+    Check(wiped_ok, "SecureWipe zeroes buffer")
     if failed == 0 { print("Cryptographic known-answer checks passed\n") }; return failed
 }
