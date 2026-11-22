@@ -7,6 +7,7 @@ ChaCha :: #import "chacha20";
 Kdf :: #import "kdf";
 Native :: #import "native";
 Wipe :: #import "wipe";
+Blake2b :: #import "blake2b";
 clock :: #import "std/timer";
 #import "std/byte_text_linux"
 
@@ -98,5 +99,14 @@ Main :: () -> s32 {
         return 1
     }
     print("8 MiB XChaCha20-Poly1305: scalar=% ms, libsodium-SIMD=% ms\n", x1 - x0, x2 - x1)
+
+    h_sha: [32]u8
+    h_b2: [32]u8
+    h0 := clock.MonotonicMilliseconds()
+    Hash.Sha256(*plain[0], chunk_size, *h_sha[0])
+    h1 := clock.MonotonicMilliseconds()
+    unused Blake2b.Blake2b256(plain, h_b2[:])
+    h2 := clock.MonotonicMilliseconds()
+    print("8 MiB pure-Ziran hash: SHA-256=% ms, BLAKE2b-256=% ms\n", h1 - h0, h2 - h1)
     return 0
 }

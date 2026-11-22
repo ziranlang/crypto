@@ -7,6 +7,8 @@ Sha512 :: #import "sha512";
 ChaCha :: #import "chacha20";
 Kdf :: #import "kdf";
 Wipe :: #import "wipe";
+Base64 :: #import "base64";
+Blake2b :: #import "blake2b";
 #import "std/byte_text_linux"
 failed: s32;
 Check :: (ok: bool, label: string) { if !ok { failed += 1; print("FAIL %\n", label) } }
@@ -77,5 +79,19 @@ Main :: () -> s32 {
     wiped_ok := true
     for i: 0..31 { if cc_key[i] != 0 { wiped_ok = false } }
     Check(wiped_ok, "SecureWipe zeroes buffer")
+    // RFC 7693 BLAKE2b-512("abc") and BLAKE2b-256("abc").
+    b2_512: [64]u8; b2_256: [32]u8
+    Check(Blake2b.Blake2b512(abc[:], b2_512[:]), "BLAKE2b-512 abc executes")
+    Hex("ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923", expected[:])
+    Check(Crypto.Equal(b2_512[:], expected[:]), "RFC 7693 BLAKE2b-512 abc")
+    Check(Blake2b.Blake2b256(abc[:], b2_256[:]), "BLAKE2b-256 abc executes")
+    Hex("bddd813c634239723171ef3fee98579b94964e3bb1cb3e427262c8c068d52319", expected[:32])
+    Check(Crypto.Equal(b2_256[:], expected[:32]), "BLAKE2b-256 abc")
+    // Base64url encode/decode round-trip and non-canonical bit rejection.
+    b64_enc: [16]u8; b64_dec: [16]u8
+    enc_len := Base64.Encode(abc[:], b64_enc[:], true, false)
+    dec_len := Base64.Decode(TextView(b64_enc[0:enc_len]), b64_dec[:], true, false)
+    Check(enc_len == 4 && dec_len == 3 && Crypto.Equal(b64_dec[0:3], abc[:]), "Base64url round trip")
+    Check(Base64.Decode("AB", b64_dec[:], true, false) < 0, "Base64url rejects non-canonical trailing bits")
     if failed == 0 { print("Cryptographic known-answer checks passed\n") }; return failed
 }
