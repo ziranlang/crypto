@@ -224,13 +224,7 @@ ChaChaQuarterRound :: (state: *u32, a: s32, b: s32, c: s32, d: s32) {
     state[b] = ChaChaRotateLeft(state[b], 7)
 }
 
-ChaChaBlock :: (key: *u8, nonce: *u8, counter: u32, output: *u8) {
-    initial: [16]u32
-    working: [16]u32
-    defer {
-        Wipe.SecureWipePointer(cast(*u8)*initial[0], size_of(type_of(initial)))
-        Wipe.SecureWipePointer(cast(*u8)*working[0], size_of(type_of(working)))
-    }
+ChaChaInitState :: (initial: *u32, key: *u8, nonce: *u8, counter: u32) {
     initial[0] = 0x61707865
     initial[1] = 0x3320646e
     initial[2] = 0x79622d32
@@ -244,22 +238,24 @@ ChaChaBlock :: (key: *u8, nonce: *u8, counter: u32, output: *u8) {
     initial[13] = Load32LE(nonce)
     initial[14] = Load32LE(*nonce[4])
     initial[15] = Load32LE(*nonce[8])
-    index = 0
+}
+
+ChaChaRunBlock :: (initial: *u32, working: *u32, output: *u8) {
+    index: s32 = 0
     while index < 16 {
         working[index] = initial[index]
         index += 1
     }
-
     round: s32 = 0
     while round < 10 {
-        ChaChaQuarterRound(*working[0], 0, 4, 8, 12)
-        ChaChaQuarterRound(*working[0], 1, 5, 9, 13)
-        ChaChaQuarterRound(*working[0], 2, 6, 10, 14)
-        ChaChaQuarterRound(*working[0], 3, 7, 11, 15)
-        ChaChaQuarterRound(*working[0], 0, 5, 10, 15)
-        ChaChaQuarterRound(*working[0], 1, 6, 11, 12)
-        ChaChaQuarterRound(*working[0], 2, 7, 8, 13)
-        ChaChaQuarterRound(*working[0], 3, 4, 9, 14)
+        ChaChaQuarterRound(working, 0, 4, 8, 12)
+        ChaChaQuarterRound(working, 1, 5, 9, 13)
+        ChaChaQuarterRound(working, 2, 6, 10, 14)
+        ChaChaQuarterRound(working, 3, 7, 11, 15)
+        ChaChaQuarterRound(working, 0, 5, 10, 15)
+        ChaChaQuarterRound(working, 1, 6, 11, 12)
+        ChaChaQuarterRound(working, 2, 7, 8, 13)
+        ChaChaQuarterRound(working, 3, 4, 9, 14)
         round += 1
     }
     index = 0
@@ -269,24 +265,48 @@ ChaChaBlock :: (key: *u8, nonce: *u8, counter: u32, output: *u8) {
     }
 }
 
+ChaChaBlock :: (key: *u8, nonce: *u8, counter: u32, output: *u8) {
+    initial: [16]u32
+    working: [16]u32
+    defer {
+        Wipe.SecureWipePointer(cast(*u8)*initial[0], size_of(type_of(initial)))
+        Wipe.SecureWipePointer(cast(*u8)*working[0], size_of(type_of(working)))
+    }
+    ChaChaInitState(*initial[0], key, nonce, counter)
+    ChaChaRunBlock(*initial[0], *working[0], output)
+}
+
 ChaChaXor :: (key: *u8, nonce: *u8, input: *u8, length: s64, output: *u8) {
+    initial: [16]u32
+    working: [16]u32
     block: [ChaChaBlockBytes]u8
-    defer Wipe.SecureWipe(block[:])
+    defer {
+        Wipe.SecureWipePointer(cast(*u8)*initial[0], size_of(type_of(initial)))
+        Wipe.SecureWipePointer(cast(*u8)*working[0], size_of(type_of(working)))
+        Wipe.SecureWipe(block[:])
+    }
+    ChaChaInitState(*initial[0], key, nonce, 1)
     offset: s64 = 0
-    counter: u32 = 1
-    while offset < length {
-        ChaChaBlock(key, nonce, counter, *block[0])
-        count: s64 = length - offset
-        if count > ChaChaBlockBytes {
-            count = ChaChaBlockBytes
+    while length - offset >= ChaChaBlockBytes {
+        ChaChaRunBlock(*initial[0], *working[0], *block[0])
+        word: s64 = 0
+        while word < 16 {
+            at := word * 4
+            val := Load32LE(*input[offset + at]) ^ Load32LE(*block[at])
+            Store32LE(*output[offset + at], val)
+            word += 1
         }
+        offset += ChaChaBlockBytes
+        initial[12] += 1
+    }
+    if offset < length {
+        ChaChaRunBlock(*initial[0], *working[0], *block[0])
+        count := length - offset
         index: s64 = 0
         while index < count {
             output[offset + index] = input[offset + index] ^ block[index]
             index += 1
         }
-        offset += count
-        counter += 1
     }
 }
 
