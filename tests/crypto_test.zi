@@ -9,6 +9,7 @@ Kdf :: #import "kdf";
 Wipe :: #import "wipe";
 Base64 :: #import "base64";
 Blake2b :: #import "blake2b";
+Totp :: #import "totp";
 #import "std/byte_text_linux"
 failed: s32;
 Check :: (ok: bool, label: string) { if !ok { failed += 1; print("FAIL %\n", label) } }
@@ -93,5 +94,21 @@ Main :: () -> s32 {
     dec_len := Base64.Decode(TextView(b64_enc[0:enc_len]), b64_dec[:], true, false)
     Check(enc_len == 4 && dec_len == 3 && Crypto.Equal(b64_dec[0:3], abc[:]), "Base64url round trip")
     Check(Base64.Decode("AB", b64_dec[:], true, false) < 0, "Base64url rejects non-canonical trailing bits")
+    // RFC 4648 Base32, RFC 4226 HOTP, RFC 6238 TOTP (SHA-1).
+    b32_enc: [64]u8; b32_dec: [32]u8
+    totp_secret: [20]u8 = .{49,50,51,52,53,54,55,56,57,48,49,50,51,52,53,54,55,56,57,48} // "12345678901234567890"
+    b32_len := Totp.Base32Encode(totp_secret[:], b32_enc[:])
+    Check(b32_len == 32 && TextView(b32_enc[:b32_len]) == "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", "RFC 4648 Base32 encode")
+    b32_dlen := Totp.Base32Decode("gezd gnbv-gy3t qojq gezd gnbv gy3t qojq====", b32_dec[:])
+    Check(b32_dlen == 20 && Crypto.Equal(b32_dec[:20], totp_secret[:]), "RFC 4648 Base32 decode")
+    Check(Totp.HotpCode(totp_secret[:], 0, 6) == 755224, "RFC 4226 HOTP counter 0")
+    Check(Totp.HotpCode(totp_secret[:], 1, 6) == 287082, "RFC 4226 HOTP counter 1")
+    Check(Totp.HotpCode(totp_secret[:], 9, 6) == 520489, "RFC 4226 HOTP counter 9")
+    Check(Totp.TotpCode(totp_secret[:], 59, 30, 8) == 94287082, "RFC 6238 TOTP t=59 (8 digits)")
+    Check(Totp.TotpCode(totp_secret[:], 1111111109, 30, 8) == 7081804, "RFC 6238 TOTP t=1111111109 (8 digits)")
+    v1 := Totp.VerifyTotp(totp_secret[:], "287 082", 59, 30, 6, 1, -1)
+    Check(v1.valid && v1.step == 1, "RFC 6238 TOTP verify with space")
+    v2 := Totp.VerifyTotp(totp_secret[:], "287082", 59, 30, 6, 1, v1.step)
+    Check(!v2.valid, "RFC 6238 TOTP rejects replayed step")
     if failed == 0 { print("Cryptographic known-answer checks passed\n") }; return failed
 }

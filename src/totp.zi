@@ -1,0 +1,222 @@
+// RFC 4648 Base32, RFC 2104 HMAC-SHA1, RFC 4226 HOTP, and RFC 6238 TOTP.
+Sha1 :: #import "sha1";
+Wipe :: #import "wipe";
+
+BASE32_ALPHABET :: "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+TOTP_DEFAULT_PERIOD :: 30;
+TOTP_DEFAULT_DIGITS :: 6;
+TOTP_DEFAULT_SKEW :: 1;
+
+VerifyResult :: struct {
+    valid: bool
+    step: s64
+}
+
+#scope_file
+Base32Value :: (ch: u8) -> s32 {
+    if ch >= cast(u8)65 && ch <= cast(u8)90 { return cast(s32)(ch - cast(u8)65) }
+    if ch >= cast(u8)97 && ch <= cast(u8)122 { return cast(s32)(ch - cast(u8)97) }
+    if ch >= cast(u8)50 && ch <= cast(u8)55 { return cast(s32)(ch - cast(u8)50) + 26 }
+    return -1
+}
+
+Pow10 :: (digits: s32) -> u32 {
+    if digits == 6 { return cast(u32)1000000 }
+    if digits == 7 { return cast(u32)10000000 }
+    if digits == 8 { return cast(u32)100000000 }
+    return 0
+}
+
+#scope_export
+// Encodes raw bytes to unpadded uppercase RFC 4648 Base32.
+// Returns encoded byte count, or -1 if output buffer is too small.
+Base32Encode :: (input: []u8, output: []u8) -> s64 {
+    if input.count == 0 { return 0 }
+    needed := (input.count * 8 + 4) / 5
+    if output.count < needed { return -1 }
+    buffer: u32 = 0
+    bits: s32 = 0
+    written: s64 = 0
+    for index: 0..input.count-1 {
+        buffer = (buffer << cast(u32)8) | cast(u32)input[index]
+        bits += 8
+        while bits >= 5 {
+            bits -= 5
+            symbol := (buffer >> cast(u32)bits) & cast(u32)31
+            output[written] = BASE32_ALPHABET[symbol]
+            written += 1
+        }
+    }
+    if bits > 0 {
+        symbol := (buffer << cast(u32)(5 - bits)) & cast(u32)31
+        output[written] = BASE32_ALPHABET[symbol]
+        written += 1
+    }
+    return written
+}
+
+// Decodes RFC 4648 Base32 (case-insensitive, ignores spaces/hyphens and '=' padding).
+// Returns decoded byte count, or -1 on invalid input or insufficient output capacity.
+Base32Decode :: (text: string, output: []u8) -> s64 {
+    buffer: u32 = 0
+    bits: s32 = 0
+    written: s64 = 0
+    saw_padding := false
+    for index: 0..text.count-1 {
+        ch := text[index]
+        if ch == cast(u8)32 || ch == cast(u8)45 || ch == cast(u8)9 || ch == cast(u8)10 || ch == cast(u8)13 {
+            continue
+        }
+        if ch == cast(u8)61 {
+            saw_padding = true
+            continue
+        }
+        if saw_padding { return -1 }
+        val := Base32Value(ch)
+        if val < 0 { return -1 }
+        buffer = (buffer << cast(u32)5) | cast(u32)val
+        bits += 5
+        if bits >= 8 {
+            bits -= 8
+            if written >= output.count { return -1 }
+            output[written] = cast(u8)((buffer >> cast(u32)bits) & cast(u32)255)
+            written += 1
+        }
+    }
+    if bits > 0 {
+        mask := (cast(u32)1 << cast(u32)bits) - cast(u32)1
+        if (buffer & mask) != 0 { return -1 }
+    }
+    return written
+}
+
+// RFC 2104 HMAC-SHA1. Writes 20-byte MAC to output.
+HmacSha1 :: (key: []u8, message: []u8, output: []u8) -> bool {
+    if output.count != 20 { return false }
+    key_block: [64]u8
+    defer Wipe.SecureWipe(key_block[:])
+    if key.count > 64 {
+        if !Sha1.Sha1(key, key_block[:20]) { return false }
+    } else {
+        for i: 0..key.count-1 { key_block[i] = key[i] }
+    }
+    ipad: [64]u8
+    opad: [64]u8
+    defer Wipe.SecureWipe(ipad[:])
+    defer Wipe.SecureWipe(opad[:])
+    for i: 0..63 {
+        ipad[i] = key_block[i] ^ cast(u8)0x36
+        opad[i] = key_block[i] ^ cast(u8)0x5c
+    }
+    inner_ctx: Sha1.Context
+    Sha1.Start(*inner_ctx)
+    Sha1.Update(*inner_ctx, ipad[:])
+    Sha1.Update(*inner_ctx, message)
+    inner_hash: [20]u8
+    defer Wipe.SecureWipe(inner_hash[:])
+    if !Sha1.Finish(*inner_ctx, inner_hash[:]) { return false }
+
+    outer_ctx: Sha1.Context
+    Sha1.Start(*outer_ctx)
+    Sha1.Update(*outer_ctx, opad[:])
+    Sha1.Update(*outer_ctx, inner_hash[:])
+    return Sha1.Finish(*outer_ctx, output)
+}
+
+// RFC 4226 HOTP code (6, 7, or 8 digits). Returns -1 on invalid input.
+HotpCode :: (secret: []u8, counter: u64, digits: s32 = TOTP_DEFAULT_DIGITS) -> s64 {
+    modulus := Pow10(digits)
+    if secret.count == 0 || modulus == 0 { return -1 }
+    counter_bytes: [8]u8
+    for i: 0..7 {
+        counter_bytes[7 - i] = cast(u8)((counter >> cast(u64)(i * 8)) & cast(u64)255)
+    }
+    mac: [20]u8
+    defer Wipe.SecureWipe(mac[:])
+    if !HmacSha1(secret, counter_bytes[:], mac[:]) { return -1 }
+    offset := cast(s64)(mac[19] & cast(u8)0x0f)
+    binary: u32 =
+        ((cast(u32)(mac[offset] & cast(u8)0x7f)) << cast(u32)24) |
+        ((cast(u32)mac[offset + 1]) << cast(u32)16) |
+        ((cast(u32)mac[offset + 2]) << cast(u32)8) |
+        (cast(u32)mac[offset + 3])
+    return cast(s64)(binary % modulus)
+}
+
+// RFC 6238 TOTP code at unix_seconds. Returns -1 on invalid input.
+TotpCode :: (secret: []u8, unix_seconds: s64, period: s64 = TOTP_DEFAULT_PERIOD,
+    digits: s32 = TOTP_DEFAULT_DIGITS) -> s64 {
+    if unix_seconds < 0 || period <= 0 { return -1 }
+    return HotpCode(secret, cast(u64)(unix_seconds / period), digits)
+}
+
+// Formats a non-negative OTP code as zero-padded ASCII digits.
+FormatCode :: (code: s64, digits: s32, output: []u8) -> s64 {
+    modulus := Pow10(digits)
+    if code < 0 || modulus == 0 || cast(u64)code >= cast(u64)modulus || output.count < cast(s64)digits {
+        return -1
+    }
+    remaining := code
+    index := cast(s64)digits - 1
+    while index >= 0 {
+        output[index] = cast(u8)(48 + (remaining % 10))
+        remaining /= 10
+        index -= 1
+    }
+    return cast(s64)digits
+}
+
+// Parses an OTP digit string (allowing spaces/hyphens) into canonical ASCII digits.
+// Returns digit count on success, or -1 if invalid.
+NormalizeCode :: (text: string, digits: s32, output: []u8) -> s64 {
+    if Pow10(digits) == 0 || output.count < cast(s64)digits { return -1 }
+    written: s64 = 0
+    for i: 0..text.count-1 {
+        ch := text[i]
+        if ch == cast(u8)32 || ch == cast(u8)45 { continue }
+        if ch < cast(u8)48 || ch > cast(u8)57 { return -1 }
+        if written >= cast(s64)digits { return -1 }
+        output[written] = ch
+        written += 1
+    }
+    if written != cast(s64)digits { return -1 }
+    return written
+}
+
+// Constant-time RFC 6238 TOTP verification with clock-skew window and replay guard.
+// Rejects any step <= last_used_step so a code cannot be replayed within its 30s window.
+VerifyTotp :: (secret: []u8, code_text: string, unix_seconds: s64,
+    period: s64 = TOTP_DEFAULT_PERIOD, digits: s32 = TOTP_DEFAULT_DIGITS,
+    skew: s64 = TOTP_DEFAULT_SKEW, last_used_step: s64 = -1) -> VerifyResult {
+    if secret.count == 0 || unix_seconds < 0 || period <= 0 || skew < 0 || skew > 10 {
+        return .{}
+    }
+    supplied: [8]u8
+    if NormalizeCode(code_text, digits, supplied[:]) != cast(s64)digits {
+        return .{}
+    }
+    current_step := unix_seconds / period
+    start := current_step - skew
+    if start < 0 { start = 0 }
+    end := current_step + skew
+    matched := false
+    matched_step: s64 = -1
+    expected: [8]u8
+    defer Wipe.SecureWipe(expected[:])
+    defer Wipe.SecureWipe(supplied[:])
+    step := start
+    while step <= end {
+        if step > last_used_step {
+            code := HotpCode(secret, cast(u64)step, digits)
+            if code >= 0 && FormatCode(code, digits, expected[:]) == cast(s64)digits {
+                if Wipe.ConstantTimeEqual(supplied[:digits], expected[:digits]) && !matched {
+                    matched = true
+                    matched_step = step
+                }
+            }
+        }
+        step += 1
+    }
+    if !matched { return .{} }
+    return .{valid = true, step = matched_step}
+}
